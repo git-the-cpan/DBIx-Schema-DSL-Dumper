@@ -1,127 +1,253 @@
 use strict;
 use warnings;
 use Test::More;
-use Test::Requires 'DBD::SQLite';
+use Test::Requires 'DBD::mysql';
+use Test::mysqld;
 use DBI;
+use DBI qw(:sql_types);
 use DBIx::Schema::DSL::Dumper;
 
-# TODO mysql
-#use Test::mysqld;
-#my $mysqld = Test::mysqld->new(
-#    my_cnf => {
-#        'skip-networking' => '', # no TCP socket
-#    }
-#) or plan skip_all => $Test::mysqld::errstr;
-#my $dbh = DBI->connect($mysqld->dsn) or die 'cannot connect to db';
+
+package Foo::DSL;
+use warnings;
+use strict;
+use DBIx::Schema::DSL;
+
+database 'MySQL';
+
+create_table 'user' => columns {
+    integer 'id',   primary_key, auto_increment;
+    varchar 'name', not_null;
+    # MySQL datatype
+    enum    'blood' => ['A', 'B', 'AB', 'O'], null;
+    set     'fav'   => ['sushi', 'niku', 'sake'], null;
+};
+
+create_table 'book' => columns {
+    integer 'id',   primary_key, auto_increment;
+    varchar 'name', not_null;
+    integer 'author_id';
+    decimal 'price', 'size' => [4,2];
+
+    belongs_to 'author';
+};
+
+create_table 'author' => columns {
+    primary_key 'id';
+    varchar 'name', not_null;
+    decimal 'height', 'precision' => 4, 'scale' => 1;
+
+    add_index 'height_idx' => ['height'];
+
+    has_many 'book';
+};
+
+
+package main;
+
+my $mysqld = Test::mysqld->new(
+    my_cnf => {
+        'skip-networking' => '', # no TCP socket
+    }
+) or plan skip_all => $Test::mysqld::errstr;
+
+my $dbh = DBI->connect($mysqld->dsn(dbname => 'test'), {RaiseError => 1}) or die 'cannot connect to db';
 
 # initialize
-my $dbh = DBI->connect('dbi:SQLite::memory:', '', '', {RaiseError => 1}) or die 'cannot connect to db';
-$dbh->do(q{
-    CREATE TABLE multi_pk (
-        pk1         INTEGER NOT NULL,
-        pk2         INTEGER NOT NULL,
-        PRIMARY KEY(pk1, pk2)
-    );
-});
+my $output = Foo::DSL->output;
 
-$dbh->do(q{
-    CREATE TABLE author (
-        id          INTEGER UNSIGNED AUTO_INCREMENT,
-        name        VARCHAR(32) NOT NULL,
-        type        VARCHAR(255) DEFAULT 'foo',
-        description VARCHAR(255),
-        created_at  DATETIME,
-
-        PRIMARY KEY (`id`),
-        FOREIGN KEY (`id`) REFERENCES `book` (`author_id`)
-   );
-});
-
-$dbh->do(q{
-    CREATE INDEX name_idx ON author (`name`);
-});
-$dbh->do(q{
-    CREATE INDEX type_description_idx ON author (`type`, `description`);
-});
-$dbh->do(q{
-    CREATE UNIQUE INDEX created_at_uniq ON author (`created_at`);
-});
-
-
-$dbh->do(q{
-    CREATE TABLE book (
-        id          INTEGER UNSIGNED AUTO_INCREMENT,
-        author_id   INTEGER,
-        name        VARCHAR(32),
-        created_at  DATETIME,
-
-        PRIMARY KEY (`id`)
-    );
-});
-        #FOREIGN KEY (`author_id`) REFERENCES `author` (`id`)
-
+$dbh->do($_) for grep { $_ !~ /^\s+$/ } split /;/, $output;
 
 subtest "dump all tables" => sub {
+
     # generate schema and eval.
     my $code = DBIx::Schema::DSL::Dumper->dump(
         dbh => $dbh,
-        pkg => 'Foo::DSL',
-        default_not_null => 1,
-        default_unsigned => 1,
+        pkg => 'Bar::DSL',
     );
+
     note $code;
-    ok 1;
     my $schema = eval $code;
     ::ok !$@, 'no syntax error';
     diag $@ if $@;
 
-# TODO
-#    {
-#        package Mock::DB;
-#        use parent 'Teng';
-#    }
-#
-#    my $db = Mock::DB->new(dbh => $dbh);
-#
-#    for my $table_name (qw/user1 user2 user3/) {
-#        my $user = $db->schema->get_table($table_name);
-#        is($user->name, $table_name);
-#        is(join(',', @{$user->primary_keys}), 'user_id');
-#        is(join(',', @{$user->columns}), 'user_id,name,email,created_on');
-#    }
-#
-#    my $row_class = $db->schema->get_row_class('user1');
-#    isa_ok $row_class, 'Mock::DB::Row::User1';
-#
-#    my $row = $db->insert('user1', +{name => 'nekokak', email => 'nekokak@gmail.com'});
-#    is $row->email, 'nekokak@gmail.com_deflate_inflate';
-#    is $row->get_column('email'), 'nekokak@gmail.com_deflate';
+    is Bar::DSL->context->db, 'MySQL';
+    ok !Bar::DSL->context->default_not_null;
+    ok !Bar::DSL->context->default_unsigned;
+
+    for my $table (Foo::DSL->context->schema->get_tables) {
+        my $other = Bar::DSL->context->schema->get_table($table->name);
+        TODO: {
+            local $TODO = 'wip';
+            is $table->equals($other), 1;
+        }
+    }
+
+    subtest 'test each table' => sub {
+
+        subtest 'user' => sub {
+            my $user = Bar::DSL->context->schema->get_table('user');
+            isa_ok $user, 'SQL::Translator::Schema::Table';
+
+            my $id    = $user->get_field('id');
+            my $name  = $user->get_field('name');
+            my $blood = $user->get_field('blood');
+            my $fav   = $user->get_field('fav');
+
+            is_deeply $blood->extra->{list}, ['A','B','AB','O'], 'enum list';
+            is_deeply $fav->extra->{list}, ['sushi','niku','sake'], 'set list';
+
+            is $id->sql_data_type,      SQL_INTEGER;
+            is $name->sql_data_type,    SQL_VARCHAR;
+            is $blood->sql_data_type,   SQL_UNKNOWN_TYPE;
+            is $fav->sql_data_type,     SQL_UNKNOWN_TYPE;
+
+            is $id->is_primary_key,     1;
+            is $id->is_auto_increment,  1;
+
+            is $id->is_nullable,    0;
+            is $name->is_nullable,  0;
+            is $blood->is_nullable, 1;
+            is $fav->is_nullable,   1;
+
+            is $name->size, 255;
+        };
+
+        subtest 'author' => sub {
+            my $author = Bar::DSL->context->schema->get_table('author');
+            isa_ok $author, 'SQL::Translator::Schema::Table';
+
+            my $id     = $author->get_field('id');
+            my $name   = $author->get_field('name');
+            my $height = $author->get_field('height');
+
+            is $id->sql_data_type,      SQL_INTEGER;
+            is $name->sql_data_type,    SQL_VARCHAR;
+            is $height->sql_data_type,  SQL_DECIMAL;
+
+            is $id->is_primary_key, 1;
+            is $id->is_auto_increment, 1;
+
+            is $id->is_nullable,        0;
+            is $name->is_nullable,      0;
+            is $height->is_nullable,    1;
+
+            is_deeply [ $height->size ], [4,1];
+
+            is $id->is_foreign_key, 1;
+
+            # INDEX
+            my $height_idx = $author->get_indices->[0];
+            is $height_idx->name, 'height_idx';
+            is_deeply [ $height_idx->fields ], ['height'];
+
+            # FOREIGN_KEY
+            my $book_cons = $author->fkey_constraints->[0];
+            isa_ok $book_cons, 'SQL::Translator::Schema::Constraint';
+
+            is_deeply [ $book_cons->field_names ], ['id'];
+            is_deeply [ $book_cons->reference_fields ], ['author_id'];
+            is $book_cons->reference_table, 'book';
+        };
+
+        subtest 'book' => sub {
+            my $book   = Bar::DSL->context->schema->get_table('book');
+            isa_ok $book, 'SQL::Translator::Schema::Table';
+
+            my $id        = $book->get_field('id');
+            my $name      = $book->get_field('name');
+            my $author_id = $book->get_field('author_id');
+            my $price     = $book->get_field('price');
+
+            is $id->sql_data_type,          SQL_INTEGER;
+            is $name->sql_data_type,        SQL_VARCHAR;
+            is $author_id->sql_data_type,   SQL_INTEGER;
+            is $price->sql_data_type,       SQL_DECIMAL;
+
+            is $id->is_primary_key,     1;
+            is $id->is_auto_increment,  1;
+
+            is $id->is_nullable,        0;
+            is $name->is_nullable,      0;
+            is $author_id->is_nullable, 1;
+            is $price->is_nullable,     1;
+
+            is_deeply [ $price->size ], [4,2];
+
+            # FOREIGN_KEY
+            my $author_cons = $book->fkey_constraints->[0];
+            isa_ok $author_cons, 'SQL::Translator::Schema::Constraint';
+
+            is_deeply [ $author_cons->field_names ], ['author_id'];
+            is_deeply [ $author_cons->reference_fields ], ['id'];
+            is $author_cons->reference_table, 'author';
+        };
+    };
 };
 
-#subtest "dump single table" => sub {
-#    # generate schema and eval.
-#    my $code = Teng::Schema::Dumper->dump(
-#        dbh       => $dbh,
-#        namespace => 'Mock::DB',
-#        tables => 'user1',
-#    );
-#    note $code;
-#    like $code, qr/user1/;
-#    unlike $code, qr/user2/;
-#    unlike $code, qr/user3/;
-#};
-#
-#subtest "dump multiple tables" => sub {
-#    # generate schema and eval.
-#    my $code = Teng::Schema::Dumper->dump(
-#        dbh       => $dbh,
-#        namespace => 'Mock::DB',
-#        tables => [qw/user1 user2/],
-#    );
-#    note $code;
-#    like $code, qr/user1/;
-#    like $code, qr/user2/;
-#    unlike $code, qr/user3/;
-#};
+subtest "dump single table" => sub {
+    my $code = DBIx::Schema::DSL::Dumper->dump(
+        dbh    => $dbh,
+        tables => 'user',
+    );
+    #note $code;
+    like $code, qr/user/;
+    unlike $code, qr/author/;
+    unlike $code, qr/book/;
+};
+
+subtest "dump multiple tables" => sub {
+    my $code = DBIx::Schema::DSL::Dumper->dump(
+        dbh    => $dbh,
+        tables => [qw/author book/],
+    );
+    #note $code;
+    unlike $code, qr/user/;
+    like $code, qr/book/;
+    like $code, qr/author/;
+};
+
+subtest "default_unsigned" => sub {
+
+    my $code = DBIx::Schema::DSL::Dumper->dump(
+        dbh    => $dbh,
+        pkg    => 'Bar::Unsigned::DSL',
+        default_unsigned => 1,
+    );
+
+    my $schema = eval $code;
+    ok !!Bar::Unsigned::DSL->context->default_unsigned;
+    unlike $code, qr/ unsigned/;
+};
+
+subtest "default_not_null" => sub {
+
+    my $code = DBIx::Schema::DSL::Dumper->dump(
+        dbh    => $dbh,
+        pkg    => 'Bar::NotNull::DSL',
+        default_not_null => 1,
+    );
+
+    my $schema = eval $code;
+    ok !!Bar::NotNull::DSL->context->default_not_null;
+    unlike $code, qr/ not_null/;
+};
+
+subtest "table_options" => sub {
+
+    my $code = DBIx::Schema::DSL::Dumper->dump(
+        dbh => $dbh,
+        pkg => 'Bar::TableOptions::DSL',
+        table_options => +{
+            'mysql_table_type' => 'MyISAM',
+            'mysql_charset'    => 'latin1',
+        },
+    );
+
+    my $schema = eval $code;
+    is Bar::TableOptions::DSL->context->table_extra->{mysql_table_type} ,'MyISAM';
+    is Bar::TableOptions::DSL->context->table_extra->{mysql_charset} ,'latin1';
+};
+
 
 done_testing;

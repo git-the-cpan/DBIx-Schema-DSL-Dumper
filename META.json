@@ -48,17 +48,19 @@
       },
       "test" : {
          "requires" : {
-            "DBD::SQLite" : "0",
+            "DBD::mysql" : "0",
             "DBI" : "0",
+            "DBIx::Schema::DSL" : "0",
             "Test::More" : "0.98",
-            "Test::Requires" : "0"
+            "Test::Requires" : "0",
+            "Test::mysqld" : "0"
          }
       }
    },
    "provides" : {
       "DBIx::Schema::DSL::Dumper" : {
          "file" : "lib/DBIx/Schema/DSL/Dumper.pm",
-         "version" : "0.02"
+         "version" : "0.03"
       }
    },
    "release_status" : "stable",
@@ -72,5 +74,5 @@
          "web" : "https://github.com/kfly8/DBIx-Schema-DSL-Dumper"
       }
    },
-   "version" : "0.02"
+   "version" : "0.03"
 }
