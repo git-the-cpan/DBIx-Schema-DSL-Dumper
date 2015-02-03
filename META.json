@@ -60,7 +60,7 @@
    "provides" : {
       "DBIx::Schema::DSL::Dumper" : {
          "file" : "lib/DBIx/Schema/DSL/Dumper.pm",
-         "version" : "0.03"
+         "version" : "0.04"
       }
    },
    "release_status" : "stable",
@@ -74,5 +74,5 @@
          "web" : "https://github.com/kfly8/DBIx-Schema-DSL-Dumper"
       }
    },
-   "version" : "0.03"
+   "version" : "0.04"
 }

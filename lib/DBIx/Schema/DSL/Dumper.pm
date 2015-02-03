@@ -6,7 +6,7 @@ use DBIx::Inspector;
 use DBIx::Inspector::Iterator;
 use Carp ();
 
-our $VERSION = "0.03";
+our $VERSION = "0.04";
 
 # XXX copy from SQL::Translator::Parser::DBI-1.59
 use constant DRIVERS => {
@@ -81,6 +81,10 @@ sub _render_table {
 
     $ret .= sprintf("create_table '%s' => columns {\n", $table_info->name);
 
+    my @primary_key_names = map { $_->name } $table_info->primary_key;
+
+    $args = +{ %$args, primary_key_names => \@primary_key_names }; # XXX
+
     for my $col ($table_info->columns) {
         $ret .= _render_column($col, $table_info, $args);
     }
@@ -113,14 +117,26 @@ sub _render_column {
     $ret .= ", unsigned" if $opt{unsigned} && !$args->{default_unsigned};
 
     if (defined $column_info->column_size) {
-        my $column_size = $column_info->column_size;
+        my $column_size;
+
         if (lc($type) eq 'decimal') {
             # XXX
             $column_size = sprintf("[%d, %d]", $column_info->column_size, $column_info->{DECIMAL_DIGITS});
         }
         elsif (lc($type) =~ /^(enum|set)$/) {
-            undef $column_size;
+            ;;
         }
+        # TODO use DBIx::Schema::DSL->context->default_varchar_size
+        elsif (lc($type) eq 'varchar' && $column_info->column_size == 255) {
+            ;;
+        }
+        elsif ($column_info->{MYSQL_TYPE_NAME} && $column_info->{MYSQL_TYPE_NAME} !~ $column_info->column_size) {
+            ;;
+        }
+        else {
+            $column_size = $column_info->column_size;
+        }
+
 
         $ret .= sprintf(", size => %s", $column_size) if $column_size;
     }
@@ -131,11 +147,16 @@ sub _render_column {
     if (defined $column_info->column_def) {
         my $column_def = $column_info->column_def;
 
-        ## XXX workaround for SQLite ??
-        #$column_def =~ s/^'//;
-        #$column_def =~ s/'$//;
+        if ($type =~ /^(TIMESTAMP|DATETIME)$/ && $column_def eq 'CURRENT_TIMESTAMP') {
+            $ret .= sprintf(", default => \\'%s'", $column_def)
+        }
+        else {
+            $ret .= sprintf(", default => '%s'", $column_def)
+        }
+    }
 
-        $ret .= sprintf(", default => '%s'", $column_def)
+    if (@{$args->{primary_key_names}} == 1 && $args->{primary_key_names}->[0] eq $column_info->name) {
+        $ret .= ", primary_key"
     }
 
     if (
@@ -154,22 +175,20 @@ sub _render_column {
 sub _render_index {
     my ($table_info, $args) = @_;
 
-    my @primary_key_names = map { $_->name } $table_info->primary_key;
-    my @fk_list           = $table_info->fk_foreign_keys;
+    my @fk_list = $table_info->fk_foreign_keys;
 
     my $ret = "";
 
     # primary key
-    if (@primary_key_names) {
+    if (@{$args->{primary_key_names}} > 1) {
         $ret .= "\n";
-        $ret .= sprintf("    set_primary_key('%s');\n", join "','", @primary_key_names);
+        $ret .= sprintf("    set_primary_key('%s');\n", join "','", @{$args->{primary_key_names}});
     }
-
 
     # index
     {
-        my $itr = _statistics_info($args->{dbh}, $table_info);
-        my %pk_name = map { $_ => 1 } @primary_key_names;
+        my $itr = _statistics_info($args->{dbh}, $table_info->schema, $table_info->name);
+        my %pk_name = map { $_ => 1 } @{$args->{primary_key_names}};
         my %fk_name = map { $_->fkcolumn_name => 1 } @fk_list;
 
         my %index_info;
@@ -195,13 +214,25 @@ sub _render_index {
     }
 
     # foreign key
+    # FIXME not supported UPDATE_RULE, DELETE_RULE
     if (@fk_list) {
         $ret .= "\n";
         for my $fk (@fk_list) {
             if ($fk->fkcolumn_name eq sprintf('%s_id', $fk->pktable_name)) {
                 $ret .= sprintf("    belongs_to('%s')\n", $fk->pktable_name)
             }
-            else {
+            elsif ($fk->fkcolumn_name eq 'id' && $fk->pkcolumn_name eq sprintf('%s_id', $fk->fktable_name)) {
+
+                my $itr = _statistics_info($args->{dbh}, $table_info->schema, $fk->pktable_name);
+                while (my $index_key = $itr->next) {
+                    if ($index_key->column_name eq $fk->pkcolumn_name) {
+                        my $has = $index_key->non_unique ? 'has_many' : 'has_one';
+                        $ret .= sprintf("    %s('%s')\n", $has, $fk->pktable_name);
+                        last;
+                    }
+                }
+            }
+            elsif ($fk->fkcolumn_name && $fk->pktable_name && $fk->pkcolumn_name) {
                 $ret .= sprintf("    foreign_key('%s','%s','%s')\n", $fk->fkcolumn_name, $fk->pktable_name, $fk->pkcolumn_name);
             }
         }
@@ -212,18 +243,25 @@ sub _render_index {
 
 # EXPERIMENTAL: https://metacpan.org/pod/DBI#statistics_info
 sub _statistics_info {
-    my ($dbh, $table_info) = @_;
+    my ($dbh, $schema, $table_name) = @_;
 
     my $sth;
     if ($dbh->{'Driver'}{'Name'} eq 'mysql') {
         # TODO p-r DBD::mysqld ??
-        $sth = $dbh->prepare(q/
-                SELECT * FROM INFORMATION_SCHEMA.STATISTICS WHERE table_schema = ? AND table_name = ?
-              /);
-        $sth->execute($table_info->schema, $table_info->name);
+        my $sql = q{
+            SELECT
+                 *
+            FROM
+                INFORMATION_SCHEMA.STATISTICS
+            WHERE
+                table_schema = ?
+                AND table_name = ?
+        };
+        $sth = $dbh->prepare($sql);
+        $sth->execute($schema, $table_name);
     }
     else {
-        $sth = $dbh->statistics_info(undef, undef, $table_info->name, undef, undef);
+        $sth = $dbh->statistics_info(undef, undef, $table_name, undef, undef);
     }
 
     DBIx::Inspector::Iterator->new(
@@ -286,10 +324,24 @@ DBIx::Schema::DSL::Dumper - DBIx::Schema::DSL generator
     print DBIx::Schema::DSL::Dumper->dump(
         dbh => $dbh,
         pkg => 'Foo::DSL',
-        default_not_null => 1,
-        default_unsigned => 1,
+
+        # Optional. Default values is same as follows.
+        default_not_null => 0,
+        default_unsigned => 0,
+
+        # Optional.
+        table_options => +{
+            'mysql_table_type' => 'InnoDB',
+            'mysql_charset'    => 'utf8',
+        }
     );
 
+    # or
+
+    print DBIx::Schema::DSL::Dumper->dump(
+        dbh    => $dbh,
+        tables => [qw/foo bar/],
+    );
 
 =head1 DESCRIPTION
 

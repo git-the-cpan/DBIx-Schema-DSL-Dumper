@@ -16,11 +16,13 @@ use DBIx::Schema::DSL;
 database 'MySQL';
 
 create_table 'user' => columns {
-    integer 'id',   primary_key, auto_increment;
-    varchar 'name', not_null;
+    integer   'id',   primary_key, auto_increment;
+    varchar   'name', size => 32, not_null, default => 'unknown';
     # MySQL datatype
-    enum    'blood' => ['A', 'B', 'AB', 'O'], null;
-    set     'fav'   => ['sushi', 'niku', 'sake'], null;
+    enum      'blood' => ['A', 'B', 'AB', 'O'], null;
+    set       'fav'   => ['sushi', 'niku', 'sake'], null;
+    text      'description', null;
+    timestamp 'updated_at', not_null, default => \'CURRENT_TIMESTAMP';
 };
 
 create_table 'book' => columns {
@@ -29,6 +31,7 @@ create_table 'book' => columns {
     integer 'author_id';
     decimal 'price', 'size' => [4,2];
 
+    add_index 'name_price_idx' => ['name', 'price'];
     belongs_to 'author';
 };
 
@@ -55,6 +58,7 @@ my $dbh = DBI->connect($mysqld->dsn(dbname => 'test'), {RaiseError => 1}) or die
 
 # initialize
 my $output = Foo::DSL->output;
+#note $output;
 
 $dbh->do($_) for grep { $_ !~ /^\s+$/ } split /;/, $output;
 
@@ -68,12 +72,14 @@ subtest "dump all tables" => sub {
 
     note $code;
     my $schema = eval $code;
+#    note Bar::DSL->output;
     ::ok !$@, 'no syntax error';
     diag $@ if $@;
 
     is Bar::DSL->context->db, 'MySQL';
     ok !Bar::DSL->context->default_not_null;
     ok !Bar::DSL->context->default_unsigned;
+
 
     for my $table (Foo::DSL->context->schema->get_tables) {
         my $other = Bar::DSL->context->schema->get_table($table->name);
@@ -93,6 +99,8 @@ subtest "dump all tables" => sub {
             my $name  = $user->get_field('name');
             my $blood = $user->get_field('blood');
             my $fav   = $user->get_field('fav');
+            my $desc  = $user->get_field('description');
+            my $updated_at = $user->get_field('updated_at');
 
             is_deeply $blood->extra->{list}, ['A','B','AB','O'], 'enum list';
             is_deeply $fav->extra->{list}, ['sushi','niku','sake'], 'set list';
@@ -101,6 +109,8 @@ subtest "dump all tables" => sub {
             is $name->sql_data_type,    SQL_VARCHAR;
             is $blood->sql_data_type,   SQL_UNKNOWN_TYPE;
             is $fav->sql_data_type,     SQL_UNKNOWN_TYPE;
+            is $desc->sql_data_type,    SQL_LONGVARCHAR;
+            is $updated_at->sql_data_type,  SQL_TIMESTAMP;
 
             is $id->is_primary_key,     1;
             is $id->is_auto_increment,  1;
@@ -109,8 +119,13 @@ subtest "dump all tables" => sub {
             is $name->is_nullable,  0;
             is $blood->is_nullable, 1;
             is $fav->is_nullable,   1;
+            is $desc->is_nullable,  1;
+            is $updated_at->is_nullable, 0;
 
-            is $name->size, 255;
+            is $name->size, 32;
+
+            is $name->default_value, 'unknown';
+            is ${$updated_at->default_value}, 'CURRENT_TIMESTAMP', 'CURRENT_TIMESTAMP is SCALAR REF';
         };
 
         subtest 'author' => sub {
@@ -132,9 +147,9 @@ subtest "dump all tables" => sub {
             is $name->is_nullable,      0;
             is $height->is_nullable,    1;
 
+            # SIZE
+            is $name->size, 255;
             is_deeply [ $height->size ], [4,1];
-
-            is $id->is_foreign_key, 1;
 
             # INDEX
             my $height_idx = $author->get_indices->[0];
@@ -173,6 +188,11 @@ subtest "dump all tables" => sub {
             is $price->is_nullable,     1;
 
             is_deeply [ $price->size ], [4,2];
+
+            # INDEX
+            my $name_price_idx = $book->get_indices->[0];
+            is $name_price_idx->name, 'name_price_idx';
+            is_deeply [ $name_price_idx->fields ], ['name', 'price'];
 
             # FOREIGN_KEY
             my $author_cons = $book->fkey_constraints->[0];
