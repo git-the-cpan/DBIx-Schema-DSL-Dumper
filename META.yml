@@ -31,7 +31,7 @@ no_index:
 provides:
   DBIx::Schema::DSL::Dumper:
     file: lib/DBIx/Schema/DSL/Dumper.pm
-    version: '0.04'
+    version: '0.05'
 requires:
   DBIx::Inspector: '0.12'
   perl: '5.008001'
@@ -39,4 +39,4 @@ resources:
   bugtracker: https://github.com/kfly8/DBIx-Schema-DSL-Dumper/issues
   homepage: https://github.com/kfly8/DBIx-Schema-DSL-Dumper
   repository: git://github.com/kfly8/DBIx-Schema-DSL-Dumper.git
-version: '0.04'
+version: '0.05'

@@ -6,7 +6,7 @@ use DBIx::Inspector;
 use DBIx::Inspector::Iterator;
 use Carp ();
 
-our $VERSION = "0.04";
+our $VERSION = "0.05";
 
 # XXX copy from SQL::Translator::Parser::DBI-1.59
 use constant DRIVERS => {
@@ -104,6 +104,10 @@ sub _render_column {
 
     my ($type, @opt) = split / /, $column_info->type_name;
 
+    if ($column_info->{MYSQL_TYPE_NAME}) {
+        push @opt => split / /, $column_info->{MYSQL_TYPE_NAME};
+    }
+
     $ret .= sprintf(", '%s'", $type);
 
     my %opt = map { lc($_) => 1 } @opt;
@@ -128,6 +132,16 @@ sub _render_column {
         }
         # TODO use DBIx::Schema::DSL->context->default_varchar_size
         elsif (lc($type) eq 'varchar' && $column_info->column_size == 255) {
+            ;;
+        }
+        elsif (
+            lc($type) =~ /^(int|integer)$/ &&
+            (
+                $opt{unsigned} && $column_info->column_size == 10
+                or
+                !$opt{unsigned} && $column_info->column_size == 11
+            )
+        ) {
             ;;
         }
         elsif ($column_info->{MYSQL_TYPE_NAME} && $column_info->{MYSQL_TYPE_NAME} !~ $column_info->column_size) {
@@ -218,7 +232,7 @@ sub _render_index {
     if (@fk_list) {
         $ret .= "\n";
         for my $fk (@fk_list) {
-            if ($fk->fkcolumn_name eq sprintf('%s_id', $fk->pktable_name)) {
+            if ($fk->pktable_name && $fk->fkcolumn_name eq sprintf('%s_id', $fk->pktable_name)) {
                 $ret .= sprintf("    belongs_to('%s')\n", $fk->pktable_name)
             }
             elsif ($fk->fkcolumn_name eq 'id' && $fk->pkcolumn_name eq sprintf('%s_id', $fk->fktable_name)) {
@@ -346,11 +360,6 @@ DBIx::Schema::DSL::Dumper - DBIx::Schema::DSL generator
 =head1 DESCRIPTION
 
 This module generates the Perl code to generate DBIx::Schema::DSL.
-
-=head1 WARNING
-
-IT'S STILL IN DEVELOPMENT PHASE.
-I haven't written document and test script yet.
 
 =head1 SEE ALSO
 
